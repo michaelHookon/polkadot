@@ -1046,8 +1046,6 @@ impl<T: Config> Pallet<T> {
 			None => false,
 		};
 
-		println!("code_at {:?}", Self::past_code_meta(&id).code_at(at));
-
 		if upgrade_applied_intermediate {
 			FutureCodeHash::<T>::get(&id)
 		} else {

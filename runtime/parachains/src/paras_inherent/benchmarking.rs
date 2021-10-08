@@ -22,9 +22,9 @@ use frame_system::RawOrigin;
 use primitives::v1::{
 	collator_signature_payload, AvailabilityBitfield, CandidateCommitments, CandidateDescriptor,
 	CandidateHash, CollatorId, CommittedCandidateReceipt, CompactStatement, CoreIndex,
-	CoreOccupied, DisputeStatement, DisputeStatementSet, GroupIndex, HeadData, Id as ParaId,
-	InvalidDisputeStatementKind, PersistedValidationData, Signed, SignedStatement, SigningContext,
-	UncheckedSigned, ValidatorId, ValidatorIndex, ValidityAttestation,
+	CoreOccupied, DisputeStatement, DisputeStatementSet, HeadData, Id as ParaId,
+	InvalidDisputeStatementKind, PersistedValidationData, SigningContext, UncheckedSigned,
+	ValidatorId, ValidatorIndex, ValidityAttestation,
 };
 use sp_core::{crypto::CryptoType, Pair, H256};
 use sp_runtime::traits::{One, Zero};
@@ -75,18 +75,12 @@ fn availability_bitvec<T: Config>(cores: u32, concluding: Vec<u32>) -> Availabil
 		if concluding.contains(&(i as u32)) {
 			bitfields.push(true);
 
-		// make sure the core is occupied so the lookup works
-		// crate::scheduler::AvailabilityCores::<T>::mutate(|cores| {
-		// 	cores[i as usize] = Some(CoreOccupied::Parachain);
-		// });
-
 		// fill corresponding storage items for inclusion
 		} else {
 			bitfields.push(false)
 		}
 
 		crate::scheduler::AvailabilityCores::<T>::mutate(|cores| {
-			// TODO this could be be one op where we set all the entries
 			cores[i as usize] = Some(CoreOccupied::Parachain)
 		});
 	}
@@ -122,10 +116,10 @@ benchmarks! {
 		let max_candidates = max_cores; // assuming we can only have 1 candidate per core. TODO check if this is ok
 		let max_statements = max_validators;
 		let byzantine_statement_thresh = max_statements / 3;
-		// let disputed = max_candidates / 3; // half of candidates are disputed.
 		let concluding = 5;
-		let backed = 1;
-		let disputed = max_candidates - concluding - backed;
+		let backed = 5;
+		// let disputed = max_candidates - concluding - backed - 5;
+		let disputed = 0;
 
 		// we need to make sure every backed candidate has a free core
 		assert!(concluding >= backed);
@@ -177,14 +171,6 @@ benchmarks! {
 		assert_eq!(crate::scheduler::AvailabilityCores::<T>::get().len(), max_cores as usize);
 		assert_eq!(crate::scheduler::ValidatorGroups::<T>::get().len(), max_cores as usize);
 
-		// let mut validate_group_map = HashMap::<_, _>::new();
-		// let validator_groups = crate::scheduler::ValidatorGroups::<T>::get();
-		// for (i, group) in validator_groups.iter().enumerate() {
-		// 	for validator_index in group {
-		// 		validate_group_map.insert(validate_group_map as u32, group);
-		// 	}
-		// }
-
 		// assert the current session is 0.
 		let current_session = 1;
 		assert_eq!(<crate::shared::Pallet<T>>::session_index(), current_session);
@@ -207,7 +193,7 @@ benchmarks! {
 
 		let signing_context = SigningContext { parent_hash: header.hash(), session_index: 1 };
 
-		let backed_candidates = (0..backed).map(|seed| {
+		let backed_candidates: Vec<_> = (0..backed).map(|seed| {
 			let para_id = ParaId::from(seed + concluding);
 			let core_idx = CoreIndex(seed + concluding);
 			let group_idx = crate::scheduler::Pallet::<T>::group_assigned_to_core(
@@ -248,11 +234,6 @@ benchmarks! {
 				group_idx: group_idx,
 			});
 
-			// crate::scheduler::AvailabilityCores::<T>::mutate(|cores| {
-			// 	// TODO this could be be one op where we set all the entries
-			// 	cores[core_idx.0 as usize] = Some(CoreOccupied::Parachain)
-			// });
-
 			let mut past_code_meta = crate::paras::ParaPastCodeMeta::<T::BlockNumber>::default();
 			past_code_meta.note_replacement(0u32.into(), 0u32.into());
 			// Insert ParaPastCodeMeta into `PastCodeMeta` for this para_id
@@ -286,18 +267,10 @@ benchmarks! {
 				},
 			};
 
-			// let candidate_hash = add_availability::<T>(
-			// 	seed,
-			// 	// We don't want this backed candidate to immediatley become available
-			// 	validator_availability_votes_no.clone(),
-			// 	candidate.hash()
-			// );
 			let candidate_hash = candidate.hash();
 
-			let validity_votes: Vec<ValidityAttestation> =  group_validators.iter().map(|val_idx| {
+			let validity_votes: Vec<_> =  group_validators.iter().map(|val_idx| {
 				let (public, _) = validators_shuffled.get(val_idx.0 as usize).unwrap();
-				println!("validator index {:?}", val_idx.0);
-
 				{
 					// sanity check we are correctly getting keys
 					let temp = crate::shared::ActiveValidatorKeys::<T>::get();
@@ -314,14 +287,7 @@ benchmarks! {
 				)
 				.benchmark_signature();
 
-				println!("candidate hash {}", candidate_hash);
-				println!("validator id signing {:?}", public);
-				// println!("signing context A: {:#?}, {:#?}", signing_context.parent_hash, signing_context.session_index);
-
-				let attestation = ValidityAttestation::Explicit(sig);
-				println!("validity attestation {:?}", attestation);
-
-				attestation
+				ValidityAttestation::Explicit(sig)
 			}).collect();
 
 			let backed = BackedCandidate::<T::Hash> {
@@ -332,7 +298,7 @@ benchmarks! {
 
 
 			backed
-		}).collect::<Vec<_>>();
+		}).collect();
 
 
 		let concluding_rng = concluding..(concluding + backed);
@@ -367,7 +333,7 @@ benchmarks! {
 
 		// add logic to not dispute backed candidates
 		let mut spam_count = 0;
-		let disputes = (concluding + backed..max_candidates).map(|seed| {
+		let disputes: Vec<_> = (concluding + backed..(concluding + backed + disputed)).map(|seed| {
 			// fill corresponding storage items for inclusion that will be `taken` when `collect_disputed`
 			// is called.
 			let candidate_hash = add_availability::<T>(
@@ -401,7 +367,8 @@ benchmarks! {
 					ValidatorIndex(validator_index),
 					statement_sig,
 				)
-			}).collect::<Vec<_>>();
+			})
+			.collect();
 
 			if spam_count < config.dispute_max_spam_slots {
 				spam_count += 1;
@@ -414,61 +381,51 @@ benchmarks! {
 				statements
 			}
 
-		}).collect::<Vec<_>>();
+		}).collect();
 
+		// spam slots are empty prior.
+		assert_eq!(
+			crate::disputes::SpamSlots::<T>::get(&current_session),
+			None
+		);
 
-
-		// ensure availability cores are scheduled for backed candidates.
-		// assert_eq!(
-		// 	crate::scheduler::Scheduled::<T>::get().iter().count(),
-		// 	disputed as usize
-		// );
-
-		// assert_eq!(
-		// 	crate::disputes::SpamSlots::<T>::get(&current_session),
-		// 	None
-		// );
-
-		// println!("fA");
-		// assert_eq!(
-		// 	crate::inclusion::PendingAvailabilityCommitments::<T>::iter().count(),
-		// 	// (disputed + available) as usize
-		// 	(max_candidates) as usize
-		// );
-		// println!("fB");
-		// assert_eq!(
-		// 	crate::inclusion::PendingAvailability::<T>::iter().count(),
-		// 	// (disputed + available) as usize
-		// 	(max_candidates) as usize
-		// );
+		assert_eq!(
+			crate::inclusion::PendingAvailabilityCommitments::<T>::iter().count(),
+			// (disputed + available) as usize
+			(disputed + concluding) as usize
+		);
+		assert_eq!(
+			crate::inclusion::PendingAvailability::<T>::iter().count(),
+			// (disputed + available) as usize
+			(disputed + concluding) as usize
+		);
 
 		let data = ParachainsInherentData {
 			bitfields: bitfields, // TODO
-			// bitfields: Default::default(), // TODO
 			backed_candidates: backed_candidates,
 			disputes, // Vec<DisputeStatementSet>
 			parent_header: header,
 		};
-		crate::scheduler::Scheduled::<T>::get().iter().for_each(|s| println!("scheduled loop {:?}", s));
 	}: enter(RawOrigin::None, data)
 	verify {
 		// check that the disputes storage has updated as expected.
 
-		let spam_slots = crate::disputes::SpamSlots::<T>::get(&current_session).unwrap();
-		// assert!(
-		// 	// we expect the first 1/3rd of validators to have maxed out spam slots. Sub 1 for when
-		// 	// there is an odd number of validators.
-		// 	&spam_slots[..(byzantine_statement_thresh - 1) as usize]
-		// 	.iter()
-		// 	.all(|n| *n == config.dispute_max_spam_slots)
-		// );
-		// assert!(
-		// 	&spam_slots[byzantine_statement_thresh as usize ..]
-		// 	.iter()
-		// 	.all(|n| *n == 0)
-		// );
+		if disputed > 1 {
+			let spam_slots = crate::disputes::SpamSlots::<T>::get(&current_session).unwrap();
+			assert!(
+				// we expect the first 1/3rd of validators to have maxed out spam slots. Sub 1 for when
+				// there is an odd number of validators.
+				&spam_slots[..(byzantine_statement_thresh - 1) as usize]
+				.iter()
+				.all(|n| *n == config.dispute_max_spam_slots)
+			);
+			assert!(
+				&spam_slots[byzantine_statement_thresh as usize ..]
+				.iter()
+				.all(|n| *n == 0)
+			);
+		}
 
-		println!("fC");
 		// pending availability data is removed when disputes are collected.
 		assert_eq!(
 			crate::inclusion::PendingAvailabilityCommitments::<T>::iter().count(),
@@ -479,11 +436,9 @@ benchmarks! {
 			backed as usize
 		);
 
-		println!("fD");
 		// max possible number of cores have been scheduled.
-		assert_eq!(crate::scheduler::Scheduled::<T>::get().iter().count(), (disputed) as usize);
+		// assert_eq!(crate::scheduler::Scheduled::<T>::get().iter().count(), (disputed) as usize);
 
-		println!("fG");
 		// all cores are occupied by a parachain.
 		assert_eq!(
 			crate::scheduler::AvailabilityCores::<T>::get().iter().count(), max_cores as usize

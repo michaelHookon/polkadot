@@ -452,9 +452,6 @@ impl<T: Config> Pallet<T> {
 					)
 				};
 
-				println!("schedule and insert at {:?}", schedule_and_insert_at);
-				println!("core index {:?}", core_index);
-
 				let schedule_and_insert_at = match schedule_and_insert_at {
 					None => continue,
 					Some(at) => at,

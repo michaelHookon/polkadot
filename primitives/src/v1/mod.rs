@@ -608,14 +608,10 @@ pub fn check_candidate_backing<H: AsRef<[u8]> + Clone + Encode>(
 	group_len: usize,
 	validator_lookup: impl Fn(usize) -> Option<ValidatorId>,
 ) -> Result<usize, ()> {
-	println!("ch A");
 	if backed.validator_indices.len() != group_len {
-		println!("ch AB");
-
 		return Err(())
 	}
 
-	println!("ch B");
 	if backed.validity_votes.len() > group_len {
 		return Err(())
 	}
@@ -631,34 +627,22 @@ pub fn check_candidate_backing<H: AsRef<[u8]> + Clone + Encode>(
 		.filter(|(_, signed)| **signed)
 		.zip(backed.validity_votes.iter())
 	{
-		println!("val_in_group_idx {:?}", val_in_group_idx);
 		let validator_id = validator_lookup(val_in_group_idx).ok_or(())?;
 
-		println!("validator id to check {:?}", validator_id);
-		// println!(
-		// 	"signing context B: {:#?}, {:#?}",
-		// 	// signing_context.parent_hash, signing_context.session_index
-		// );
-
-		println!("validity attestation B {:?}", attestation);
 		let payload = attestation.signed_payload(hash.clone(), signing_context);
 		let sig = attestation.signature();
 
-		println!("hash {:?}", hash.clone());
 		if sig.verify(&payload[..], &validator_id) {
 			signed += 1;
 		} else {
-			println!("ch C ");
 			return Err(())
 		}
 	}
 
 	if signed != backed.validity_votes.len() {
-		println!("ch D ");
 		return Err(())
 	}
 
-	println!("ch succesus!");
 	Ok(signed)
 }
 

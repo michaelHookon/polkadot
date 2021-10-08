@@ -403,9 +403,7 @@ impl<T: Config> Pallet<T> {
 		scheduled: Vec<CoreAssignment>,
 		group_validators: impl Fn(GroupIndex) -> Option<Vec<ValidatorIndex>>,
 	) -> Result<Vec<CoreIndex>, DispatchError> {
-		println!("pC A");
 		ensure!(candidates.len() <= scheduled.len(), Error::<T>::UnscheduledCandidate);
-		println!("pC B");
 
 		if scheduled.is_empty() {
 			return Ok(Vec::new())
@@ -463,8 +461,6 @@ impl<T: Config> Pallet<T> {
 					Error::<T>::NotCollatorSigned,
 				);
 
-				println!("pC D");
-
 				let validation_code_hash =
 					<paras::Pallet<T>>::validation_code_hash_at(para_id, now, None)
 						// A candidate for a parachain without current validation code is not scheduled.
@@ -500,11 +496,8 @@ impl<T: Config> Pallet<T> {
 					Err(err.strip_into_dispatch_err::<T>())?;
 				};
 
-				println!("skip: {}", skip);
 				for (i, assignment) in scheduled[skip..].iter().enumerate() {
 					check_assignment_in_order(assignment)?;
-					println!("assignment {:?}", assignment);
-					println!("para_id, assingment.para_id {:?}, {:?}", para_id, assignment.para_id);
 
 					if para_id == assignment.para_id {
 						if let Some(required_collator) = assignment.required_collator() {
@@ -524,7 +517,6 @@ impl<T: Config> Pallet<T> {
 								) {
 									Some(l) => l,
 									None => {
-										println!("exit early with persisted data");
 										// We don't want to error out here because it will
 										// brick the relay-chain. So we return early without
 										// doing anything.
@@ -551,9 +543,6 @@ impl<T: Config> Pallet<T> {
 
 						let group_vals = group_validators(assignment.group_idx)
 							.ok_or_else(|| Error::<T>::InvalidGroupIndex)?;
-
-						let at_group_vals = group_vals.get(0);
-						println!("assignment.group_idx {:?}", assignment.group_idx);
 
 						// check the signatures in the backing and that it is a majority.
 						{
@@ -604,10 +593,7 @@ impl<T: Config> Pallet<T> {
 				// end of loop reached means that the candidate didn't appear in the non-traversed
 				// section of the `scheduled` slice. either it was not scheduled or didn't appear in
 				// `candidates` in the correct order.
-				println!("pC E");
-
 				ensure!(false, Error::<T>::UnscheduledCandidate);
-				println!("pC F");
 			}
 
 			// check remainder of scheduled cores, if any.
