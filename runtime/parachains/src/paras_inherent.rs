@@ -219,8 +219,6 @@ pub mod pallet {
 				<scheduler::Pallet<T>>::core_para,
 			)?;
 
-			println!("freed_concluded {:?}", freed_concluded.len());
-
 			// Inform the disputes module of all included candidates.
 			let now = <frame_system::Pallet<T>>::block_number();
 			for (_, candidate_hash) in &freed_concluded {
@@ -234,6 +232,10 @@ pub mod pallet {
 			} else {
 				Vec::new()
 			};
+
+			freed_disputed.iter().for_each(|s| println!("freed_disputed loop X {:?}", s.0));
+			freed_timeout.iter().for_each(|s| println!("freed_timeout loop X {:?}", s));
+			freed_concluded.iter().for_each(|s| println!("freed_concluded loop X {:?}", s));
 
 			// Schedule paras again, given freed cores, and reasons for freeing.
 			let mut freed = freed_disputed
@@ -260,6 +262,10 @@ pub mod pallet {
 					Error::<T>::CandidateCouldBeInvalid,
 				);
 			}
+
+			crate::scheduler::Scheduled::<T>::get()
+				.iter()
+				.for_each(|s| println!("scheduled loop X {:?}", s));
 
 			// Process backed candidates according to scheduled cores.
 			let parent_storage_root = parent_header.state_root().clone();

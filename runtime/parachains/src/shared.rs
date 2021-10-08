@@ -55,14 +55,14 @@ pub mod pallet {
 	/// Indices are into the broader validator set.
 	#[pallet::storage]
 	#[pallet::getter(fn active_validator_indices)]
-	pub(super) type ActiveValidatorIndices<T: Config> =
+	pub(crate) type ActiveValidatorIndices<T: Config> =
 		StorageValue<_, Vec<ValidatorIndex>, ValueQuery>;
 
 	/// The parachain attestation keys of the validators actively participating in parachain consensus.
 	/// This should be the same length as `ActiveValidatorIndices`.
 	#[pallet::storage]
 	#[pallet::getter(fn active_validator_keys)]
-	pub(super) type ActiveValidatorKeys<T: Config> = StorageValue<_, Vec<ValidatorId>, ValueQuery>;
+	pub(crate) type ActiveValidatorKeys<T: Config> = StorageValue<_, Vec<ValidatorId>, ValueQuery>;
 
 	#[pallet::call]
 	impl<T: Config> Pallet<T> {}

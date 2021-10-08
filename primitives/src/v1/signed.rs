@@ -241,25 +241,6 @@ impl<Payload: EncodeAs<RealPayload>, RealPayload: Encode> UncheckedSigned<Payloa
 		}))
 	}
 
-	/// Sign this payload with the given context and pair. Only for runtime benchmark use cases.
-	#[cfg(feature = "runtime-benchmarks")]
-	pub fn benchmark_sign<H: Encode>(
-		pair: &ValidatorPair,
-		payload: Payload,
-		context: &SigningContext<H>,
-		validator_index: ValidatorIndex,
-	) -> Self {
-		let data = Self::payload_data(&payload, context);
-		let signature = pair.sign(&data);
-
-		Self {
-			payload,
-			validator_index,
-			signature,
-			real_payload: std::marker::PhantomData,
-		}
-	}
-
 	/// Validate the payload given the context and public key.
 	fn check_signature<H: Encode>(
 		&self,
@@ -272,6 +253,26 @@ impl<Payload: EncodeAs<RealPayload>, RealPayload: Encode> UncheckedSigned<Payloa
 		} else {
 			Err(())
 		}
+	}
+
+	/// Sign this payload with the given context and pair. Only for runtime benchmark use cases.
+	#[cfg(feature = "runtime-benchmarks")]
+	pub fn benchmark_sign<H: Encode>(
+		pair: &ValidatorPair,
+		payload: Payload,
+		context: &SigningContext<H>,
+		validator_index: ValidatorIndex,
+	) -> Self {
+		let data = Self::payload_data(&payload, context);
+		let signature = pair.sign(&data);
+
+		Self { payload, validator_index, signature, real_payload: std::marker::PhantomData }
+	}
+
+	/// Immutably access the signature.
+	#[cfg(feature = "runtime-benchmarks")]
+	pub fn benchmark_signature(&self) -> ValidatorSignature {
+		self.signature.clone()
 	}
 }
 

@@ -341,7 +341,7 @@ pub mod pallet {
 	/// The head-data of every registered para.
 	#[pallet::storage]
 	#[pallet::getter(fn para_head)]
-	pub(super) type Heads<T: Config> = StorageMap<_, Twox64Concat, ParaId, HeadData>;
+	pub(crate) type Heads<T: Config> = StorageMap<_, Twox64Concat, ParaId, HeadData>;
 
 	/// The validation code hash of every live para.
 	///
