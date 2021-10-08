@@ -22,7 +22,7 @@ use frame_system::RawOrigin;
 use primitives::v1::{
 	collator_signature_payload, AvailabilityBitfield, CandidateCommitments, CandidateDescriptor,
 	CandidateHash, CollatorId, CommittedCandidateReceipt, CompactStatement, CoreIndex,
-	CoreOccupied, DisputeStatement, DisputeStatementSet, HeadData, Id as ParaId,
+	CoreOccupied, DisputeStatement, DisputeStatementSet, GroupIndex, HeadData, Id as ParaId,
 	InvalidDisputeStatementKind, PersistedValidationData, SigningContext, UncheckedSigned,
 	ValidatorId, ValidatorIndex, ValidityAttestation,
 };
@@ -50,21 +50,22 @@ fn run_to_block<T: Config>(to: u32) {
 }
 
 fn candidate_availability_mock<T: Config>(
-	seed: u32,
+	group_idx: GroupIndex,
+	core_idx: CoreIndex,
 	candidate_hash: CandidateHash,
 	availability_votes: BitVec<BitOrderLsb0, u8>,
 ) -> CandidatePendingAvailability<T::Hash, T::BlockNumber> {
 	// TODO can make benchmark gated function for making this struct inclusion so fields don't
 	// need to be pub(crate)
 	CandidatePendingAvailability::<T::Hash, T::BlockNumber> {
-		core: seed.into(), // CoreIndex - we need these to correspond to freed cores
+		core: core_idx,
 		hash: candidate_hash,
 		descriptor: Default::default(),
 		availability_votes,
 		backers: Default::default(),
 		relay_parent_number: Zero::zero(),
 		backed_in_number: One::one(),
-		backing_group: seed.into(),
+		backing_group: group_idx,
 	}
 }
 
@@ -89,21 +90,29 @@ fn availability_bitvec<T: Config>(cores: u32, concluding: Vec<u32>) -> Availabil
 }
 
 fn add_availability<T: Config>(
-	seed: u32,
+	para_id: ParaId,
+	core_idx: CoreIndex,
+	group_idx: GroupIndex,
 	availability_votes: BitVec<BitOrderLsb0, u8>,
 	candidate_hash: CandidateHash,
-) -> CandidateHash {
+) {
 	let candidate_availability =
-		candidate_availability_mock::<T>(seed, candidate_hash, availability_votes);
+		candidate_availability_mock::<T>(group_idx, core_idx, candidate_hash, availability_votes);
 	// TODO notes: commitments does not include any data that would lead to heavy code
 	// paths in `enact_candidate`. But enact_candidates does return a weight so maybe
 	// that should be used. (Relevant for when bitfields indicate a candidate is available)
 	let commitments = CandidateCommitments::<u32>::default();
-	let para_id = ParaId::from(seed);
 	crate::inclusion::PendingAvailability::<T>::insert(para_id, candidate_availability);
 	crate::inclusion::PendingAvailabilityCommitments::<T>::insert(&para_id, commitments);
+}
 
-	candidate_hash
+fn create_indexes<T: Config>(seed: u32) -> (ParaId, CoreIndex, GroupIndex) {
+	let para_id = ParaId::from(seed);
+	let core_idx = CoreIndex(seed);
+	let group_idx =
+		crate::scheduler::Pallet::<T>::group_assigned_to_core(core_idx, 2u32.into()).unwrap();
+
+	(para_id, core_idx, group_idx)
 }
 
 benchmarks! {
@@ -141,11 +150,15 @@ benchmarks! {
 		assert_eq!(crate::paras::Parachains::<T>::get().iter().count(), max_cores as usize);
 
 
-		let validator_pairs = (0..max_validators).map(|i| {
+		let validator_pairs: Vec<_> = (0..max_validators).map(|i| {
 			let (pair, seed) = <ValidatorId as CryptoType>::Pair::generate();
+
+			// this account is not actually used anywhere, just necessary to fulfill expected type
+			// `validators` param of `test_trigger_on_new_session`.
 			let account: T::AccountId = account("validator", i, i);
 			(account, pair)
-		}).collect::<Vec<_>>();
+		})
+		.collect();
 
 		// create map of validator public id => signing pair.
 		let validator_map = validator_pairs
@@ -163,7 +176,6 @@ benchmarks! {
 			None, // queued - when this is None validators are considered queued
 		);
 
-
 		run_to_block::<T>(2);
 		frame_system::Pallet::<T>::set_parent_hash(header.hash());
 
@@ -176,38 +188,79 @@ benchmarks! {
 		assert_eq!(<crate::shared::Pallet<T>>::session_index(), current_session);
 
 		// get validators from session info. We need to refetch them since they have been shuffled.
-		let validators_shuffled = crate::session_info::Pallet::<T>::session_info(current_session)
+		let validators_shuffled: Vec<_> = crate::session_info::Pallet::<T>::session_info(current_session)
 			.unwrap()
 			.validators
 			.clone()
 			.into_iter()
-			.map(|public| {
+			.enumerate()
+			.map(|(val_idx, public)| {
+				{
+					// sanity check that the validator keys line up as expected.
+					let active_val_keys = crate::shared::ActiveValidatorKeys::<T>::get();
+					let public_check = active_val_keys.get(val_idx).unwrap();
+					assert_eq!(public, *public_check);
+				}
+
 				let pair = validator_map.get(&public).unwrap().clone();
+
 				(public, pair)
 			})
-			.collect::<Vec<_>>();
+			.collect();
 
-		// This is not technically correct because we are saying every validator has voted a core available, but just doing for simplicity.
+		// every validator confirms availability.
 		let validator_availability_votes_yes = bitvec::bitvec![bitvec::order::Lsb0, u8; 1; max_validators as usize];
+		// every validator does not confirm availability.
 		let validator_availability_votes_no = bitvec::bitvec![bitvec::order::Lsb0, u8; 0; max_validators as usize];
 
 		let signing_context = SigningContext { parent_hash: header.hash(), session_index: 1 };
 
-		let backed_candidates: Vec<_> = (0..backed).map(|seed| {
-			let para_id = ParaId::from(seed + concluding);
-			let core_idx = CoreIndex(seed + concluding);
-			let group_idx = crate::scheduler::Pallet::<T>::group_assigned_to_core(
+		// range of cores for both backed and concluding (i.e. becoming fully available) candidates.
+		let backed_rng = 0..backed;
+
+		let concluding_cores: Vec<_> = 	backed_rng.clone().map(|i| i as u32).collect();
+		let availability_bitvec = availability_bitvec::<T>(max_cores, concluding_cores);
+		let bitfields: Vec<_> = validators_shuffled.iter().enumerate().map(|(i, (public, pair))| {
+			let unchecked_signed = UncheckedSigned::<AvailabilityBitfield>::benchmark_sign(
+				pair,
+				availability_bitvec.clone(),
+				&signing_context,
+				ValidatorIndex(i as u32),
+			);
+
+			unchecked_signed
+		})
+		.collect();
+
+		for seed in backed_rng.clone() {
+			// make sure the candidates that are concluding by becoming available are marked as
+			// pending availability.
+			let (para_id, core_idx, group_idx) = create_indexes::<T>(seed);
+			add_availability::<T>(
+				para_id,
 				core_idx,
-				2u32.into()
-			)
-			.unwrap();
+				group_idx,
+				validator_availability_votes_yes.clone(),
+				CandidateHash(H256::from_low_u64_le(seed as u64))
+			);
+
+			crate::scheduler::AvailabilityCores::<T>::mutate(|cores| {
+				cores[seed as usize] = Some(CoreOccupied::Parachain)
+			});
+		}
+
+		let backed_candidates: Vec<_> = backed_rng.clone().map(|seed| {
+			let (para_id, core_idx, group_idx) = create_indexes::<T>(seed);
 
 			let collator_pair = <CollatorId as CryptoType>::Pair::generate().0;
 			let relay_parent = header.hash();
 			let head_data: HeadData = Default::default();
 			let persisted_validation_data_hash = PersistedValidationData::<H256> {
 				parent_head: head_data.clone(), // dummy parent_head
-				relay_parent_number: (*header.number()).try_into().map_err(|_| ()).expect("header.number defined above"),
+				relay_parent_number: (*header.number())
+					.try_into()
+					.map_err(|_| ())
+					.expect("header.number defined above"),
 				relay_parent_storage_root: Default::default(), // equivalent to header.storage_root,
 				max_pov_size: config.max_pov_size,
 			}
@@ -240,10 +293,8 @@ benchmarks! {
 			crate::paras::PastCodeMeta::<T>::insert(&para_id, past_code_meta);
 			crate::paras::CurrentCodeHash::<T>::insert(&para_id, validation_code_hash.clone());
 
-			let group_validators = crate::scheduler::Pallet::<T>::group_validators(
-				group_idx
-			).unwrap();
-
+			let group_validators =
+				crate::scheduler::Pallet::<T>::group_validators(group_idx).unwrap();
 
 			let candidate = CommittedCandidateReceipt::<T::Hash> {
 				descriptor: CandidateDescriptor::<T::Hash> {
@@ -271,12 +322,6 @@ benchmarks! {
 
 			let validity_votes: Vec<_> =  group_validators.iter().map(|val_idx| {
 				let (public, _) = validators_shuffled.get(val_idx.0 as usize).unwrap();
-				{
-					// sanity check we are correctly getting keys
-					let temp = crate::shared::ActiveValidatorKeys::<T>::get();
-					let public_check = temp.get(val_idx.0 as usize).unwrap();
-					assert_eq!(public_check, public);
-				}
 
 				let pair = validator_map.get(public).unwrap();
 				let sig = UncheckedSigned::<CompactStatement>::benchmark_sign(
@@ -288,59 +333,33 @@ benchmarks! {
 				.benchmark_signature();
 
 				ValidityAttestation::Explicit(sig)
-			}).collect();
+			})
+			.collect();
 
-			let backed = BackedCandidate::<T::Hash> {
+			BackedCandidate::<T::Hash> {
 				candidate: candidate,
 				validity_votes: validity_votes,
 				validator_indices: bitvec::bitvec![bitvec::order::Lsb0, u8; 1; group_validators.len()],
-			};
-
-
-			backed
-		}).collect();
-
-
-		let concluding_rng = concluding..(concluding + backed);
-		let concluding_cores: Vec<_> = concluding_rng.clone().map(|i| i as u32).collect();
-		let availability_bitvec = availability_bitvec::<T>(max_cores, concluding_cores);
-		let bitfields: Vec<_> = validators_shuffled.iter().enumerate().map(|(i, (public, pair))| {
-			let unchecked_signed = UncheckedSigned::<AvailabilityBitfield>::benchmark_sign(
-				pair,
-				availability_bitvec.clone(),
-				&signing_context,
-				ValidatorIndex(i as u32),
-			);
-
-			unchecked_signed
+			}
 		})
 		.collect();
 
-		concluding_rng.for_each(|seed| {
-			// make sure the candidates that are concluding by becoming available are marked as
-			// pending availability.
-			add_availability::<T>(
-				seed,
-				validator_availability_votes_yes.clone(),
-				CandidateHash(H256::from_low_u64_le(seed as u64))
-			);
-
-			crate::scheduler::AvailabilityCores::<T>::mutate(|cores| {
-				// TODO this could be be one op where we set all the entries
-				cores[seed as usize] = Some(CoreOccupied::Parachain)
-			});
-		});
 
 		// add logic to not dispute backed candidates
 		let mut spam_count = 0;
 		let disputes: Vec<_> = (concluding + backed..(concluding + backed + disputed)).map(|seed| {
 			// fill corresponding storage items for inclusion that will be `taken` when `collect_disputed`
 			// is called.
-			let candidate_hash = add_availability::<T>(
-				seed,
+			let (para_id, core_idx, group_idx) = create_indexes::<T>(seed);
+			let candidate_hash = CandidateHash(H256::from_low_u64_le(seed as u64));
+			add_availability::<T>(
+				para_id,
+				core_idx,
+				group_idx,
 				validator_availability_votes_yes.clone(),
-				CandidateHash(H256::from_low_u64_le(seed as u64))
+				candidate_hash
 			);
+
 			// create the set of statements to dispute the above candidate hash.
 			let statement_range = if spam_count < config.dispute_max_spam_slots {
 				// if we have not hit the spam dispute statement limit, only make up to the byzantine
@@ -381,7 +400,8 @@ benchmarks! {
 				statements
 			}
 
-		}).collect();
+		})
+		.collect();
 
 		// spam slots are empty prior.
 		assert_eq!(
